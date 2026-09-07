@@ -1,0 +1,27 @@
+{
+  "_design": "Per-sample latency of each stage alone and with both running on separate GPUs of one machine, processes pinned with CUDA_VISIBLE_DEVICES so device_map=\"auto\" cannot straddle both. The ratio is the transferable quantity; the absolute milliseconds belong to this machine and are not comparable with Table 1.",
+  "n_samples": 300,
+  "stub": false,
+  "s1_model": "KRLabsOrg/lettucedect-large-modernbert-en-v1",
+  "s3_model": "Qwen/Qwen2.5-14B-Instruct",
+  "alone": {
+    "s1_mean_ms": 126.62824465815599,
+    "s3_mean_ms": 179.28828323958442,
+    "s1_p95_ms": 195.4804250271991,
+    "s3_p95_ms": 286.0707510262728
+  },
+  "concurrent": {
+    "s1_mean_ms": 227.35759392535934,
+    "s3_mean_ms": 238.0364741947657,
+    "s1_p95_ms": 344.93399201892316,
+    "s3_p95_ms": 337.51450199633837
+  },
+  "slowdown_ratio": {
+    "s1": 1.7954729968746785,
+    "s3": 1.3276744575476558
+  },
+  "derived_max_alone_ms": 179.28828323958442,
+  "measured_concurrent_ms": 238.0364741947657,
+  "overhead_ratio": 1.3276744575476558,
+  "overhead_ms": 58.748190955181286
+}
