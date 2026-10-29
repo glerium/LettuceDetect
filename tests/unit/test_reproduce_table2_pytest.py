@@ -21,6 +21,15 @@ class Table2ProtocolTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 evaluation.token_score(tokens)
 
+    def test_paper_score_retains_zero_for_no_hallucinated_spans(self):
+        supported = [{"prob": 0.12, "pred": 0}, {"prob": 0.42, "pred": 0}]
+        self.assertAlmostEqual(evaluation.token_score(supported), 0.42)
+        self.assertEqual(evaluation.paper_token_score(supported), 0.0)
+        self.assertAlmostEqual(evaluation.paper_token_score(
+            supported + [{"prob": 0.8, "pred": 1}]), 0.8)
+        with self.assertRaises(ValueError):
+            evaluation.paper_token_score([])
+
     def test_labels_match_raw_spans(self):
         for value in (0, 1):
             item = {"id": "x", "hallucination_labels": "[{}]" if value else "[]",
@@ -32,7 +41,7 @@ class Table2ProtocolTests(unittest.TestCase):
 
     def test_selection_preserves_all_tasks_and_smoke_cells(self):
         data = []
-        for generator in evaluation.GENERATORS:
+        for generator in evaluation.SUPPORTED_GENERATORS:
             for task in evaluation.TASKS:
                 for _ in range(150):
                     data.append({"id": str(len(data)), "model": generator,
@@ -44,7 +53,18 @@ class Table2ProtocolTests(unittest.TestCase):
         self.assertEqual(len(smoke), 6)
         self.assertEqual(len({(s["model"], s["task_type"]) for s in smoke}), 6)
         with self.assertRaises(ValueError):
-            evaluation.select_samples(data[:-1], smoke=False)
+            evaluation.select_samples(data[:-1], smoke=False,
+                                      generators=["mistral-7B-instruct"])
+        mistral = evaluation.select_samples(data, smoke=False,
+                                             generators=["mistral-7B-instruct"])
+        self.assertEqual(len(mistral), 450)
+        self.assertEqual({s["model"] for s in mistral}, {"mistral-7B-instruct"})
+        self.assertEqual(len(evaluation.select_samples(
+            data, smoke=True, generators=["mistral-7B-instruct"])), 3)
+        self.assertEqual(len(evaluation.select_samples(
+            data, smoke=False, generators=evaluation.SUPPORTED_GENERATORS)), 1350)
+        with self.assertRaises(ValueError):
+            evaluation.select_samples(data, False, generators=["mistral-7B-instruct"] * 2)
 
     def test_grouped_metrics_and_fixed_threshold(self):
         rows = []
@@ -63,6 +83,10 @@ class Table2ProtocolTests(unittest.TestCase):
                         for g in evaluation.GENERATORS]
         for group in evaluation.summarize(single_class).values():
             self.assertIsNone(group["methods"]["blend"]["auroc"])
+        mistral = [dict(r, generator="mistral-7B-instruct") for r in rows[:2]]
+        metrics = evaluation.summarize(mistral)
+        self.assertEqual(set(metrics), {"mistral-7B-instruct"})
+        self.assertEqual(metrics["mistral-7B-instruct"]["methods"]["blend"]["auroc"], 1.0)
 
 
 if __name__ == "__main__":

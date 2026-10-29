@@ -1,4 +1,4 @@
-"""Evaluate the two Llama-2 generator subsets in Grounding Probes Table 2.
+"""Evaluate selected generator subsets in Grounding Probes Table 2.
 
 Uses released detectors and an existing local RAGTruth test split. No answer
 generation, probe training, score caching, or automatic error fallback occurs.
@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 ROOT = Path("/mnt/data/wenzelin")
 GENERATORS = ("llama-2-7b-chat", "llama-2-13b-chat")
+SUPPORTED_GENERATORS = (*GENERATORS, "mistral-7B-instruct")
 TASKS = ("Summary", "Data2txt", "QA")
 ALPHA = 0.45
 THRESHOLD = 0.5
@@ -45,6 +46,12 @@ def token_score(tokens: list[dict]) -> float:
     return max(probability(token["prob"]) for token in tokens)
 
 
+def paper_token_score(tokens: list[dict]) -> float:
+    """Match the paper benchmark: zero if no hallucinated token/span exists."""
+    token_score(tokens)  # Validate every probability, even on supported tokens.
+    return max((probability(t["prob"]) for t in tokens if t["pred"] == 1), default=0.0)
+
+
 def blend_score(lettuce: float, probe: float) -> float:
     return ALPHA * probability(lettuce) + (1 - ALPHA) * probability(probe)
 
@@ -60,11 +67,15 @@ def hallucination_label(item: dict) -> int:
     return result
 
 
-def select_samples(test, smoke: bool) -> list[dict]:
+def select_samples(test, smoke: bool, generators=GENERATORS) -> list[dict]:
+    if not generators or len(set(generators)) != len(generators):
+        raise ValueError("Specify at least one generator, without duplicates")
+    if set(generators) - set(SUPPORTED_GENERATORS):
+        raise ValueError(f"Unsupported generators: {generators}")
     samples = []
     ids = set()
     for index, item in enumerate(test):
-        if item["model"] not in GENERATORS:
+        if item["model"] not in generators:
             continue
         sample_id = str(item["id"])
         if sample_id in ids:
@@ -78,7 +89,7 @@ def select_samples(test, smoke: bool) -> list[dict]:
         samples.append(dict(item, sample_id=sample_id, test_index=index,
                             label=hallucination_label(item)))
     counts = Counter((s["model"], s["task_type"]) for s in samples)
-    expected = Counter({(g, t): 150 for g in GENERATORS for t in TASKS})
+    expected = Counter({(g, t): 150 for g in generators for t in TASKS})
     if counts != expected:
         raise ValueError(f"Expected 150 responses per generator/task; got {dict(counts)}")
     if smoke:
@@ -97,7 +108,7 @@ def summarize(rows: list[dict]) -> dict:
     from sklearn.metrics import f1_score, roc_auc_score
 
     result = {}
-    for generator in GENERATORS:
+    for generator in dict.fromkeys(r["generator"] for r in rows):
         group = [r for r in rows if r["generator"] == generator]
         labels = [r["label"] for r in group]
         methods = {}
@@ -125,7 +136,7 @@ def load_inputs(args):
     ds = load_from_disk(str(args.data_dir))
     if len(ds["train"]) != 15090 or len(ds["test"]) != 2700:
         raise ValueError("Expected official RAGTruth train/test sizes 15090/2700")
-    samples = select_samples(ds["test"], args.smoke)
+    samples = select_samples(ds["test"], args.smoke, args.generators)
     for model_dir in (args.observer, args.lettuce_model):
         if not (model_dir / "config.json").is_file():
             raise FileNotFoundError(model_dir / "config.json")
@@ -158,10 +169,12 @@ def evaluate(args, samples: list[dict]) -> list[dict]:
     detector = TransformerDetector(str(args.lettuce_model), max_length=4096, device="cuda:0")
     for i, (sample, row) in enumerate(zip(samples, rows), 1):
         LOG.info("LettuceDetect %d/%d id=%s", i, len(samples), row["sample_id"])
-        row["lettucedetect"] = token_score(detector.predict(
+        tokens = detector.predict(
             context=[sample["context"]], answer=sample["output"],
             question=sample["query"], output_format="tokens",
-        ))
+        )
+        row["lettucedetect_raw"] = token_score(tokens)
+        row["lettucedetect"] = paper_token_score(tokens)
     del detector
     gc.collect()
     torch.cuda.empty_cache()
@@ -195,7 +208,10 @@ def main() -> None:
     parser.add_argument("--probe", type=Path, default=ROOT / (
         "models/lettucedetect-grounding-probes/probe_14b_qwen_pca512.joblib"))
     parser.add_argument("--output-dir", type=Path)
-    parser.add_argument("--smoke", action="store_true", help="One sample per generator/task (6 total)")
+    parser.add_argument("--generators", nargs="+", choices=SUPPORTED_GENERATORS,
+                        default=list(GENERATORS),
+                        help="Generator subsets to evaluate (default: the two Llama-2 models)")
+    parser.add_argument("--smoke", action="store_true", help="One sample per selected generator/task")
     parser.add_argument("--preflight", action="store_true", help="CPU data/probe checks only; no outputs")
     args = parser.parse_args()
     os.environ["HF_HUB_OFFLINE"] = "1"
@@ -231,7 +247,9 @@ def main() -> None:
         "observer_dtype": "float16", "observer_layer": -20, "pooling": "response_mean",
         "lettucedetect_dtype": "float32", "max_length": 4096,
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
-        "n_samples": len(samples), "augmentations": [], "strategy": "blend",
+        "n_samples": len(samples), "generators": args.generators,
+        "lettucedetect_score_rule": "max probability over predicted hallucinated tokens; zero if none",
+        "augmentations": [], "strategy": "blend",
     }
     (output / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
     LOG.info("Output directory: %s", output.resolve())
@@ -244,7 +262,10 @@ def main() -> None:
             writer.writerows(rows)
         (output / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         LOG.info("Completed %d responses\n%s", len(rows), json.dumps(metrics, indent=2))
-        LOG.info("Smoke metrics are diagnostic only" if args.smoke else "Full 900-response evaluation complete")
+        if args.smoke:
+            LOG.info("Smoke metrics are diagnostic only")
+        else:
+            LOG.info("Full %d-response evaluation complete", len(rows))
     except Exception:
         LOG.exception("Evaluation failed; no fallback, no resume, and no completed metrics")
         raise
