@@ -52,8 +52,11 @@ class Table2ProtocolTests(unittest.TestCase):
         smoke = evaluation.select_samples(data, smoke=True)
         self.assertEqual(len(smoke), 6)
         self.assertEqual(len({(s["model"], s["task_type"]) for s in smoke}), 6)
+        incomplete = data.copy()
+        incomplete.pop(next(i for i, item in enumerate(incomplete)
+                            if item["model"] == "mistral-7B-instruct"))
         with self.assertRaises(ValueError):
-            evaluation.select_samples(data[:-1], smoke=False,
+            evaluation.select_samples(incomplete, smoke=False,
                                       generators=["mistral-7B-instruct"])
         mistral = evaluation.select_samples(data, smoke=False,
                                              generators=["mistral-7B-instruct"])
@@ -62,7 +65,9 @@ class Table2ProtocolTests(unittest.TestCase):
         self.assertEqual(len(evaluation.select_samples(
             data, smoke=True, generators=["mistral-7B-instruct"])), 3)
         self.assertEqual(len(evaluation.select_samples(
-            data, smoke=False, generators=evaluation.SUPPORTED_GENERATORS)), 1350)
+            data, smoke=False, generators=evaluation.SUPPORTED_GENERATORS)), 2700)
+        self.assertEqual(len(evaluation.select_samples(
+            data, smoke=True, generators=evaluation.SUPPORTED_GENERATORS)), 18)
         with self.assertRaises(ValueError):
             evaluation.select_samples(data, False, generators=["mistral-7B-instruct"] * 2)
 
@@ -87,6 +92,19 @@ class Table2ProtocolTests(unittest.TestCase):
         metrics = evaluation.summarize(mistral)
         self.assertEqual(set(metrics), {"mistral-7B-instruct"})
         self.assertEqual(metrics["mistral-7B-instruct"]["methods"]["blend"]["auroc"], 1.0)
+
+    def test_full_test_pooled_and_macro_metrics(self):
+        rows = []
+        for generator in evaluation.SUPPORTED_GENERATORS:
+            for label, score in [(0, 0.1), (1, 0.9)]:
+                rows.append(dict(generator=generator, task_type="QA", label=label,
+                                 lettucedetect=score, probe=score, blend=score))
+        result = evaluation.summarize_all(rows)
+        self.assertEqual(result["n"], 12)
+        self.assertEqual(len(evaluation.summarize(rows)), 6)
+        for block in ("pooled", "generator_macro"):
+            for method in result[block].values():
+                self.assertEqual(method, {"auroc": 1.0, "f1_at_0_5": 1.0})
 
 
 if __name__ == "__main__":

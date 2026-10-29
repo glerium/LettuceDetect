@@ -1,4 +1,4 @@
-# Grounding Probes Table 2: Llama-2 and Mistral generators
+# Grounding Probes Table 2: all RAGTruth generators
 
 This entrypoint evaluates the existing RAGTruth test responses, not new Llama
 generations. It uses all 450 responses per generator (150 per task), for 900 in
@@ -94,10 +94,30 @@ python -u scripts/reproduce_table2.py --generators mistral-7B-instruct --smoke
 python -u scripts/reproduce_table2.py --generators mistral-7B-instruct
 ```
 
-To select all three generators explicitly, pass
+To select the three open-weight subsets used initially, pass
 `--generators mistral-7B-instruct llama-2-7b-chat llama-2-13b-chat` (1350 responses).
 Every selected generator must have 150 official test responses per task.
 Summaries contain only the selected generators.
+
+## All six generators: 2700 responses
+
+No additional generation-model weights or GPT API access are needed: the
+existing test split already contains all responses. `--generators all` selects
+GPT-4, GPT-3.5-turbo, Mistral-7B-Instruct, and Llama-2 7B/13B/70B, 450 each.
+
+```bash
+python scripts/reproduce_table2.py --generators all --preflight
+# Optional GPU smoke test: 18 responses, one per generator/task.
+python -u scripts/reproduce_table2.py --generators all --smoke
+# Complete official test split; starts a fresh run without reusing old scores.
+python -u scripts/reproduce_table2.py --generators all
+```
+
+For all-six runs, `metrics.json` contains all six per-generator results, and
+`overall_metrics.json` additionally contains pooled metrics over all responses
+and the unweighted mean of per-generator metrics. Pooled AUROC and the mean
+of per-generator AUROCs are different quantities. The three paper reference
+pooled AUROCs are 0.864 (LettuceDetect-large), 0.894 (probe), and 0.924 (blend).
 
 Earlier runs from commit `4ee09a5` used the unthresholded token maximum as the
 primary LettuceDetect score. Their original files remain unchanged. Those

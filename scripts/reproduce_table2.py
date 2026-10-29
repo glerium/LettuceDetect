@@ -25,7 +25,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 ROOT = Path("/mnt/data/wenzelin")
 GENERATORS = ("llama-2-7b-chat", "llama-2-13b-chat")
-SUPPORTED_GENERATORS = (*GENERATORS, "mistral-7B-instruct")
+SUPPORTED_GENERATORS = (
+    *GENERATORS, "mistral-7B-instruct", "llama-2-70b-chat",
+    "gpt-4-0613", "gpt-3.5-turbo-0613",
+)
 TASKS = ("Summary", "Data2txt", "QA")
 ALPHA = 0.45
 THRESHOLD = 0.5
@@ -128,6 +131,30 @@ def summarize(rows: list[dict]) -> dict:
     return result
 
 
+def summarize_all(rows: list[dict]) -> dict:
+    """Pooled metrics and unweighted generator-macro metrics for all six groups."""
+    from sklearn.metrics import f1_score, roc_auc_score
+
+    groups = summarize(rows)
+    pooled = {}
+    macro = {}
+    labels = [r["label"] for r in rows]
+    for method in ("lettucedetect", "probe", "blend"):
+        scores = [probability(r[method]) for r in rows]
+        pooled[method] = {
+            "auroc": float(roc_auc_score(labels, scores)) if len(set(labels)) == 2 else None,
+            "f1_at_0_5": float(f1_score(
+                labels, [int(s >= THRESHOLD) for s in scores], zero_division=0)),
+        }
+        macro[method] = {}
+        for metric in ("auroc", "f1_at_0_5"):
+            values = [g["methods"][method][metric] for g in groups.values()]
+            macro[method][metric] = (
+                sum(values) / len(values) if all(v is not None for v in values) else None
+            )
+    return {"n": len(rows), "pooled": pooled, "generator_macro": macro}
+
+
 def load_inputs(args):
     import numpy as np
     from datasets import load_from_disk
@@ -208,12 +235,16 @@ def main() -> None:
     parser.add_argument("--probe", type=Path, default=ROOT / (
         "models/lettucedetect-grounding-probes/probe_14b_qwen_pca512.joblib"))
     parser.add_argument("--output-dir", type=Path)
-    parser.add_argument("--generators", nargs="+", choices=SUPPORTED_GENERATORS,
+    parser.add_argument("--generators", nargs="+", choices=(*SUPPORTED_GENERATORS, "all"),
                         default=list(GENERATORS),
-                        help="Generator subsets to evaluate (default: the two Llama-2 models)")
+                        help="Generator subsets, or all for all 2700 responses (default: two Llama-2 models)")
     parser.add_argument("--smoke", action="store_true", help="One sample per selected generator/task")
     parser.add_argument("--preflight", action="store_true", help="CPU data/probe checks only; no outputs")
     args = parser.parse_args()
+    if "all" in args.generators:
+        if len(args.generators) != 1:
+            parser.error("Use --generators all alone, without individual generator names")
+        args.generators = list(SUPPORTED_GENERATORS)
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["HF_DATASETS_OFFLINE"] = "1"
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -261,6 +292,11 @@ def main() -> None:
             writer.writeheader()
             writer.writerows(rows)
         (output / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+        if set(args.generators) == set(SUPPORTED_GENERATORS):
+            overall = summarize_all(rows)
+            (output / "overall_metrics.json").write_text(
+                json.dumps(overall, indent=2), encoding="utf-8")
+            LOG.info("Pooled and generator-macro metrics\n%s", json.dumps(overall, indent=2))
         LOG.info("Completed %d responses\n%s", len(rows), json.dumps(metrics, indent=2))
         if args.smoke:
             LOG.info("Smoke metrics are diagnostic only")
