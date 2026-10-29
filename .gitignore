@@ -186,3 +186,6 @@ testing/
 # LaTeX build artifacts from the thesis copy kept in this tree
 thesis.bbl
 thesis.blg
+
+# Local Table 2 evaluation artifacts
+/outputs/
